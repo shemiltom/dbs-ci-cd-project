@@ -33,3 +33,21 @@
         name: ubuntu
         groups: docker
         append: yes
+
+    - name: Copy the app folder to the EC2 instance
+      copy:
+        src: ../app
+        dest: /home/ubuntu/
+        owner: ubuntu
+
+    - name: Copy the Dockerfile to the EC2 instance
+      copy:
+        src: ../Dockerfile
+        dest: /home/ubuntu/
+        owner: ubuntu
+
+    - name: Build the Docker image
+      command: docker build -t my-website /home/ubuntu/
+
+    - name: Run the Docker container
+      command: docker run -d -p 80:80 --name running-site my-website
