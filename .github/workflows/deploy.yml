@@ -1,0 +1,79 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  AWS_REGION: eu-west-1
+  AWS_DEFAULT_REGION: eu-west-1
+
+jobs:
+  terraform:
+    name: "1 — Terraform Apply"
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    outputs:
+      public_ip: ${{ steps.save_ip.outputs.public_ip }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9
+
+      - name: Terraform Init
+        run: terraform init
+        working-directory: ./terraform
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve -var="aws_profile="
+        working-directory: ./terraform
+        env:
+          TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
+
+      - name: Save EC2 details
+        id: save_ip
+        run: echo "public_ip=$(terraform output -raw public_ip)" >> $GITHUB_OUTPUT
+        working-directory: ./terraform
+
+  deploy:
+    name: "2 — Ansible Deploy"
+    needs: terraform
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      ANSIBLE_HOST_KEY_CHECKING: "false"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Ansible & Collections
+        run: |
+          pip install ansible "boto3>=1.35.0" "botocore>=1.35.0"
+          ansible-galaxy collection install amazon.aws community.docker
+
+      - name: Write SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/ansible-user
+          chmod 600 ~/.ssh/ansible-user
+
+      - name: Write dynamic inventory with IP
+        run: |
+          cat > /tmp/inventory.yml <<EOF
+          aws_ec2:
+            hosts:
+              app_server:
+                ansible_host: ${{ needs.terraform.outputs.public_ip }}
+                ansible_user: ubuntu
+                ansible_ssh_private_key_file: ~/.ssh/ansible-user
+          EOF
+
+      - name: Run Ansible Playbook
+        run: ansible-playbook -i /tmp/inventory.yml ansible/playbook_web_server.yml
